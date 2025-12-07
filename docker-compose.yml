@@ -1,0 +1,40 @@
+# docker-compose.yml for Stash with Hardware Accelerated Generation
+# 
+# This uses a locally-built image with the generation hwaccel patch.
+# Build the image first with: ./build.sh
+#
+# Your existing volumes and settings are preserved - just the image changes.
+
+services:
+  stash:
+    # Use locally built image with hwaccel generation patch
+    image: stash-hwaccel-gen:latest
+    
+    # NVIDIA GPU configuration
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+      - STASH_HW_TEST_TIMEOUT=10
+    
+    # Preserve your existing volume mounts
+    volumes:
+      - ./config:/root/.stash
+      - ./data:/data
+      - ./metadata:/metadata
+      - ./cache:/cache
+      - ./blobs:/blobs
+      - ./generated:/generated
+    
+    ports:
+      - "9999:9999"
+    
+    restart: unless-stopped
