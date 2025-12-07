@@ -2,6 +2,10 @@
 
 Patches for [Stash](https://github.com/stashapp/stash) that enable NVIDIA GPU hardware acceleration for all generation tasks including previews, sprites, screenshots, phash, and markers.
 
+## Important
+
+**Hardware Acceleration must be enabled in Stash settings for GPU to be used.** After starting the container, go to Settings - System - Transcoding and enable the Hardware Acceleration checkbox. Without this, all tasks will use CPU.
+
 ## Overview
 
 These patches modify Stash's ffmpeg calls to utilize NVIDIA CUDA for decoding and NVENC for encoding during generation tasks. This significantly reduces generation time, especially for 4K content.
@@ -83,7 +87,7 @@ services:
 After starting the container:
 
 1. Navigate to Settings - System - Transcoding
-2. Enable **Hardware Acceleration** checkbox
+2. Enable **Hardware Acceleration** checkbox (required for GPU to work)
 3. Set **FFmpeg path**: `/usr/bin/ffmpeg`
 4. Set **FFProbe path**: `/usr/bin/ffprobe`
 5. Leave **FFmpeg Transcode Input Args** empty (the patches handle this automatically)
@@ -182,6 +186,12 @@ Verify NVIDIA runtime is configured:
 ```bash
 docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
 ```
+
+### Generation still using CPU
+
+1. Verify Hardware Acceleration is enabled in Settings - System - Transcoding
+2. Check FFmpeg path is `/usr/bin/ffmpeg` not the bundled version
+3. Restart container after changing settings
 
 ## Performance Notes
 
