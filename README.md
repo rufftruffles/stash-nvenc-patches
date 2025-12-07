@@ -27,33 +27,21 @@ These patches modify Stash's ffmpeg calls to utilize NVIDIA CUDA for decoding an
 - NVIDIA GPU with NVENC support (GTX 600+ / Quadro K series or newer)
 - Docker with NVIDIA Container Toolkit
 - NVIDIA drivers installed on host
-- Base image: ghcr.io/feederbox826/stash-s6:hwaccel-develop (or similar with jellyfin-ffmpeg)
 
-## Building
+## Quick Start (Pre-built Image)
 
-### Quick Build
-
-```bash
-docker build -t stash-hwaccel-gen:latest .
-```
-
-### Clean Build (recommended)
+Pull the pre-built image:
 
 ```bash
-docker builder prune -af
-docker build --no-cache -t stash-hwaccel-gen:latest .
+docker pull ghcr.io/rufftruffles/stash-nvenc-patches:latest
 ```
 
-### Build Time
-
-Approximately 15-20 minutes depending on system.
-
-## Docker Compose Configuration
+Docker Compose example:
 
 ```yaml
 services:
   stash:
-    image: stash-hwaccel-gen:latest
+    image: ghcr.io/rufftruffles/stash-nvenc-patches:latest
     container_name: stash
     runtime: nvidia
     environment:
@@ -72,7 +60,7 @@ Alternative GPU configuration (if runtime: nvidia is not available):
 ```yaml
 services:
   stash:
-    image: stash-hwaccel-gen:latest
+    image: ghcr.io/rufftruffles/stash-nvenc-patches:latest
     deploy:
       resources:
         reservations:
@@ -81,6 +69,27 @@ services:
               count: all
               capabilities: [gpu, compute, video, utility]
 ```
+
+## Building From Source
+
+If you prefer to build the image yourself:
+
+### Quick Build
+
+```bash
+docker build -t stash-hwaccel-gen:latest .
+```
+
+### Clean Build (recommended)
+
+```bash
+docker builder prune -af
+docker build --no-cache -t stash-hwaccel-gen:latest .
+```
+
+### Build Time
+
+Approximately 15-20 minutes depending on system.
 
 ## Stash Configuration
 
