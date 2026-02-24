@@ -9,7 +9,8 @@ type ScreenshotOptions struct {
 	// Quality is the quality scale. See https://ffmpeg.org/ffmpeg.html#Main-options
 	Quality int
 
-	Width int
+	Width  int
+	Height int
 
 	// Verbosity is the logging verbosity. Defaults to LogLevelError if not set.
 	Verbosity ffmpeg.LogLevel
@@ -76,6 +77,9 @@ func ScreenshotTime(input string, t float64, options ScreenshotOptions) ffmpeg.A
 
 	if options.Width > 0 {
 		vf = vf.ScaleWidth(options.Width)
+		args = args.VideoFilter(vf)
+	} else if options.Height > 0 {
+		vf = vf.ScaleHeight(options.Height)
 		args = args.VideoFilter(vf)
 	}
 
