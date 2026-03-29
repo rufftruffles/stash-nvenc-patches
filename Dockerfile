@@ -1,7 +1,7 @@
 # Build patched Stash with hardware acceleration for ALL generation tasks
 FROM golang:latest AS builder
 ENV GOTOOLCHAIN=auto
-RUN apt-get update && apt-get install -y git make nodejs npm curl && npm install -g yarn
+RUN apt-get update && apt-get install -y git make nodejs npm curl && corepack enable
 WORKDIR /build
 ARG STASH_VERSION=develop  
 RUN git clone --depth 1 --branch ${STASH_VERSION} https://github.com/stashapp/stash.git .
@@ -48,11 +48,11 @@ RUN echo "=== Verifying patches ===" && \
     echo "=== All patches verified ==="
 # Build UI
 WORKDIR /build/ui/v2.5
-RUN yarn install --frozen-lockfile
+RUN pnpm install --frozen-lockfile
 WORKDIR /build
 RUN make generate
 WORKDIR /build/ui/v2.5
-RUN yarn build
+RUN npm run build
 # Build backend - auto-detect latest release version from GitHub
 WORKDIR /build
 RUN LATEST_VERSION=$(curl -s https://api.github.com/repos/stashapp/stash/releases/latest | grep '"tag_name"' | cut -d'"' -f4) && \
