@@ -9,13 +9,19 @@ type ScreenshotOptions struct {
 	// Quality is the quality scale. See https://ffmpeg.org/ffmpeg.html#Main-options
 	Quality int
 
-	Width  int
+	// Width is the width to scale the screenshot to. If 0, no scaling will be applied.
+	Width int
+	// Height is the height to scale the screenshot to. If 0, no scaling will be applied.
+	// Not used if Width is set.
 	Height int
 
 	// Verbosity is the logging verbosity. Defaults to LogLevelError if not set.
 	Verbosity ffmpeg.LogLevel
 
 	UseSelectFilter bool
+
+	// SlowSeek uses accurate seek by placing -ss after the input.
+	SlowSeek bool
 
 	// ExtraInputArgs are arguments added before the input argument (e.g., -hwaccel cuda)
 	ExtraInputArgs []string
@@ -64,9 +70,13 @@ func ScreenshotTime(input string, t float64, options ScreenshotOptions) ffmpeg.A
 	// Add extra input args (e.g., -hwaccel cuda) before seek and input
 	args = append(args, options.ExtraInputArgs...)
 
-	args = args.Seek(t)
-
+	if !options.SlowSeek {
+		args = args.Seek(t)
+	}
 	args = args.Input(input)
+	if options.SlowSeek {
+		args = args.Seek(t)
+	}
 	args = args.VideoFrames(1)
 
 	if options.Quality > 0 {
