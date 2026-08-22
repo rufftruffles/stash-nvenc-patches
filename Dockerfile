@@ -1,5 +1,5 @@
 # Build patched Stash with hardware acceleration for ALL generation tasks
-FROM golang:latest AS builder
+FROM golang:1.25-trixie AS builder
 ENV GOTOOLCHAIN=auto
 RUN apt-get update && apt-get install -y git make nodejs npm curl && corepack enable
 WORKDIR /build
