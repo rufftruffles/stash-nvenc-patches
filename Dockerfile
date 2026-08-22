@@ -3,7 +3,11 @@ FROM golang:1.25-trixie AS builder
 ENV GOTOOLCHAIN=auto
 RUN apt-get update && apt-get install -y git make nodejs npm curl && corepack enable
 WORKDIR /build
-ARG STASH_VERSION=develop  
+ARG STASH_VERSION=develop
+# BUILD_VERSION is stamped into the binary's version string. The workflow passes
+# "<upstream release>-develop.<date>.<upstream short sha>"; empty falls back to
+# the latest upstream release tag so plain "docker build ." still works.
+ARG BUILD_VERSION=
 RUN git clone --depth 1 --branch ${STASH_VERSION} https://github.com/stashapp/stash.git .
 # Copy all patch files
 COPY patches/ /patches/
@@ -55,7 +59,7 @@ WORKDIR /build/ui/v2.5
 RUN npm run build
 # Build backend - auto-detect latest release version from GitHub
 WORKDIR /build
-RUN LATEST_VERSION=$(curl -s https://api.github.com/repos/stashapp/stash/releases/latest | grep '"tag_name"' | cut -d'"' -f4) && \
+RUN LATEST_VERSION="${BUILD_VERSION:-$(curl -s https://api.github.com/repos/stashapp/stash/releases/latest | grep '"tag_name"' | cut -d'"' -f4)}" && \
     echo "Building with version: ${LATEST_VERSION}" && \
     go build -v -tags "sqlite_stat4 sqlite_math_functions" \
     -ldflags "-X 'github.com/stashapp/stash/internal/build.version=${LATEST_VERSION}' \

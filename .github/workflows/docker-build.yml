@@ -32,10 +32,33 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve upstream Stash version
+        id: stash
+        run: |
+          release=$(curl -sf https://api.github.com/repos/stashapp/stash/releases/latest | jq -r .tag_name)
+          sha=$(git ls-remote https://github.com/stashapp/stash.git refs/heads/develop | cut -c1-7)
+          date=$(date -u +%Y%m%d)
+          echo "release=${release}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          ours=$(echo "${GITHUB_SHA}" | cut -c1-7)
+          echo "version=${release}-develop.${date}.${sha}.${ours}" >> "$GITHUB_OUTPUT"
+          echo "Building ${release}-develop.${date}.${sha}.${ours}"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          build-args: |
+            STASH_VERSION=develop
+            BUILD_VERSION=${{ steps.stash.outputs.version }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.stash.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:develop-${{ steps.stash.outputs.sha }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.stash.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Stash built from upstream develop (${{ steps.stash.outputs.sha }}) with NVENC hardware acceleration patches
           no-cache: true
