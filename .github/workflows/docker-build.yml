@@ -51,7 +51,6 @@ jobs:
           push: true
           build-args: |
             STASH_VERSION=develop
-            BUILD_VERSION=${{ steps.stash.outputs.version }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.stash.outputs.version }}
