@@ -82,87 +82,95 @@ type sceneMarkerOptions struct {
 	Audio    bool
 }
 
-// getMarkerVideoCodec returns the video codec to use for marker preview generation.
-// If hardware acceleration is enabled and a compatible hardware codec is available,
-// returns the hardware codec. Otherwise returns libx264.
-func (g Generator) getMarkerVideoCodec() ffmpeg.VideoCodec {
-	if g.FFMpegConfig.GetTranscodeHardwareAcceleration() {
-		if hwcodec := g.Encoder.HWCodecMP4Compatible(); hwcodec != nil {
-			logger.Debugf("[generator] Using hardware codec for marker preview: %s", hwcodec.Name)
-			return *hwcodec
-		}
-	}
-	return ffmpeg.VideoCodecLibX264
-}
-
 func (g Generator) markerPreviewVideo(input string, options sceneMarkerOptions) generateFn {
 	return func(lockCtx *fsutil.LockContext, tmpFn string) error {
-		codec := g.getMarkerVideoCodec()
-		useHardware := codec != ffmpeg.VideoCodecLibX264
+		codec := g.getPreviewVideoCodec()
 
-		var videoFilter ffmpeg.VideoFilter
-		videoFilter = videoFilter.ScaleWidth(markerPreviewWidth)
-
-		var videoArgs ffmpeg.Args
-
-		if useHardware {
-			// Hardware encoding: scale on CPU first, then upload to GPU
-			hwFilter := g.Encoder.HWFilterInit(codec, false)
-			if hwFilter != "" {
-				videoFilter = ffmpeg.VideoFilter(string(videoFilter) + "," + string(hwFilter))
+		// Try the full GPU pipeline first, falling back to CPU decoding if the GPU
+		// cannot handle the source. See previewVideoChunkHW.
+		if isNVENC(codec) {
+			err := g.generate(lockCtx, g.markerPreviewVideoArgs(input, tmpFn, codec, options, true))
+			if err == nil || lockCtx.Err() != nil {
+				return err
 			}
-			videoArgs = videoArgs.VideoFilter(videoFilter)
-			videoArgs = append(videoArgs,
-				"-rc", "vbr",
-				"-cq", "21",
-				"-movflags", "+faststart",
-			)
-		} else {
-			// Software encoding: use original settings
-			videoArgs = videoArgs.VideoFilter(videoFilter)
-			videoArgs = append(videoArgs,
-				"-pix_fmt", "yuv420p",
-				"-profile:v", "high",
-				"-level", "4.2",
-				"-preset", "veryslow",
-				"-crf", "24",
-				"-movflags", "+faststart",
-				"-threads", "4",
-				"-sws_flags", "lanczos",
-				"-strict", "-2",
-			)
+			logger.Warnf("[generator] full GPU marker preview failed for %s, falling back to CPU decoding: %v", input, err)
 		}
 
-		// Build extra input args with hardware device initialization if needed
-		extraInputArgs := g.FFMpegConfig.GetTranscodeInputArgs()
-		if useHardware {
-			var hwArgs ffmpeg.Args
-			hwArgs = g.Encoder.HWDeviceInit(hwArgs, codec, false)
-			extraInputArgs = append(hwArgs, extraInputArgs...)
-		}
-
-		trimOptions := transcoder.TranscodeOptions{
-			Duration:        options.Duration,
-			StartTime:       options.Seconds,
-			OutputPath:      tmpFn,
-			VideoCodec:      codec,
-			VideoArgs:       videoArgs,
-			ExtraInputArgs:  extraInputArgs,
-			ExtraOutputArgs: g.FFMpegConfig.GetTranscodeOutputArgs(),
-		}
-
-		if options.Audio {
-			var audioArgs ffmpeg.Args
-			audioArgs = audioArgs.AudioBitrate(markerPreviewAudioBitrate)
-
-			trimOptions.AudioCodec = ffmpeg.AudioCodecAAC
-			trimOptions.AudioArgs = audioArgs
-		}
-
-		args := transcoder.Transcode(input, trimOptions)
-
-		return g.generate(lockCtx, args)
+		return g.generate(lockCtx, g.markerPreviewVideoArgs(input, tmpFn, codec, options, false))
 	}
+}
+
+func (g Generator) markerPreviewVideoArgs(input string, output string, codec ffmpeg.VideoCodec, options sceneMarkerOptions, fullHW bool) ffmpeg.Args {
+	useHardware := codec != ffmpeg.VideoCodecLibX264
+	fullHW = fullHW && isNVENC(codec)
+
+	var videoFilter ffmpeg.VideoFilter
+	videoFilter = videoFilter.ScaleWidth(markerPreviewWidth)
+
+	var videoArgs ffmpeg.Args
+
+	switch {
+	case fullHW:
+		// Full GPU: frames are decoded, scaled and encoded without leaving the GPU
+		videoArgs = videoArgs.VideoFilter(fullHWScaleFilter(markerPreviewWidth))
+		videoArgs = append(videoArgs,
+			"-rc", "vbr",
+			"-cq", "21",
+			"-movflags", "+faststart",
+		)
+	case useHardware:
+		// Hardware encoding only: decode and scale on CPU, then upload to the GPU
+		if hwFilter := g.Encoder.HWFilterInit(codec, false); hwFilter != "" {
+			videoFilter = ffmpeg.VideoFilter(string(videoFilter) + "," + string(hwFilter))
+		}
+		videoArgs = videoArgs.VideoFilter(videoFilter)
+		videoArgs = append(videoArgs,
+			"-rc", "vbr",
+			"-cq", "21",
+			"-movflags", "+faststart",
+		)
+	default:
+		videoArgs = videoArgs.VideoFilter(videoFilter)
+		videoArgs = append(videoArgs,
+			"-pix_fmt", "yuv420p",
+			"-profile:v", "high",
+			"-level", "4.2",
+			"-preset", "veryslow",
+			"-crf", "24",
+			"-movflags", "+faststart",
+			"-threads", "4",
+			"-sws_flags", "lanczos",
+			"-strict", "-2",
+		)
+	}
+
+	// Hardware device initialisation goes before the user's input args
+	extraInputArgs := g.FFMpegConfig.GetTranscodeInputArgs()
+	if useHardware {
+		var hwArgs ffmpeg.Args
+		hwArgs = g.Encoder.HWDeviceInit(hwArgs, codec, fullHW)
+		extraInputArgs = append(hwArgs, extraInputArgs...)
+	}
+
+	trimOptions := transcoder.TranscodeOptions{
+		Duration:        options.Duration,
+		StartTime:       options.Seconds,
+		OutputPath:      output,
+		VideoCodec:      codec,
+		VideoArgs:       videoArgs,
+		ExtraInputArgs:  extraInputArgs,
+		ExtraOutputArgs: g.FFMpegConfig.GetTranscodeOutputArgs(),
+	}
+
+	if options.Audio {
+		var audioArgs ffmpeg.Args
+		audioArgs = audioArgs.AudioBitrate(markerPreviewAudioBitrate)
+
+		trimOptions.AudioCodec = ffmpeg.AudioCodecAAC
+		trimOptions.AudioArgs = audioArgs
+	}
+
+	return transcoder.Transcode(input, trimOptions)
 }
 
 func (g Generator) SceneMarkerWebp(ctx context.Context, input string, hash string, seconds float64) error {
@@ -204,20 +212,12 @@ func (g Generator) sceneMarkerWebp(input string, options sceneMarkerOptions) gen
 			"-threads", "4",
 		)
 
-		// Build input args - add hwaccel cuda if hardware acceleration is enabled
-		var extraInputArgs []string
-		if g.FFMpegConfig.GetTranscodeHardwareAcceleration() {
-			extraInputArgs = append(extraInputArgs, "-hwaccel", "cuda")
-		}
-
 		trimOptions := transcoder.TranscodeOptions{
-			Duration:        markerImageDuration,
-			StartTime:       float64(options.Seconds),
-			OutputPath:      tmpFn,
-			VideoCodec:      ffmpeg.VideoCodecLibWebP,
-			VideoArgs:       videoArgs,
-			ExtraInputArgs:  extraInputArgs,
-			ExtraOutputArgs: g.FFMpegConfig.GetTranscodeOutputArgs(),
+			Duration:   markerImageDuration,
+			StartTime:  float64(options.Seconds),
+			OutputPath: tmpFn,
+			VideoCodec: ffmpeg.VideoCodecLibWebP,
+			VideoArgs:  videoArgs,
 		}
 
 		args := transcoder.Transcode(input, trimOptions)
@@ -256,18 +256,11 @@ type SceneMarkerScreenshotOptions struct {
 
 func (g Generator) sceneMarkerScreenshot(input string, options SceneMarkerScreenshotOptions) generateFn {
 	return func(lockCtx *fsutil.LockContext, tmpFn string) error {
-		// Build input args - add hwaccel cuda if hardware acceleration is enabled
-		var extraInputArgs []string
-		if g.FFMpegConfig.GetTranscodeHardwareAcceleration() {
-			extraInputArgs = append(extraInputArgs, "-hwaccel", "cuda")
-		}
-
 		ssOptions := transcoder.ScreenshotOptions{
-			OutputPath:     tmpFn,
-			OutputType:     transcoder.ScreenshotOutputTypeImage2,
-			Quality:        markerScreenshotQuality,
-			Width:          options.Width,
-			ExtraInputArgs: extraInputArgs,
+			OutputPath: tmpFn,
+			OutputType: transcoder.ScreenshotOutputTypeImage2,
+			Quality:    markerScreenshotQuality,
+			Width:      options.Width,
 		}
 
 		args := transcoder.ScreenshotTime(input, options.Seconds, ssOptions)

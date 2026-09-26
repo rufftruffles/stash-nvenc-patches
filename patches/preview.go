@@ -113,6 +113,8 @@ func (g *Generator) previewVideo(input string, videoDuration float64, options Pr
 			logger.Warnf("[generator] Segment duration (%f) too short. Using %f instead.", options.SegmentDuration, minSegmentDuration)
 		}
 
+		fullHW := g.previewFullHW()
+
 		for i := 0; i < options.Segments; i++ {
 			chunkFile, err := g.tempFile(g.ScenePaths, mp4Pattern)
 			if err != nil {
@@ -131,7 +133,7 @@ func (g *Generator) previewVideo(input string, videoDuration float64, options Pr
 				Preset:     options.Preset,
 			}
 
-			if err := g.previewVideoChunk(lockCtx, input, chunkOptions, fallback, useVsync2); err != nil {
+			if err := g.previewVideoChunkHW(lockCtx, input, chunkOptions, fallback, useVsync2, &fullHW); err != nil {
 				return err
 			}
 		}
@@ -160,7 +162,8 @@ func (g *Generator) previewVideoSingle(input string, videoDuration float64, opti
 			Preset:     options.Preset,
 		}
 
-		return g.previewVideoChunk(lockCtx, input, chunkOptions, fallback, useVsync2)
+		fullHW := g.previewFullHW()
+		return g.previewVideoChunkHW(lockCtx, input, chunkOptions, fallback, useVsync2, &fullHW)
 	}
 }
 
@@ -185,31 +188,70 @@ func (g Generator) getPreviewVideoCodec() ffmpeg.VideoCodec {
 	return ffmpeg.VideoCodecLibX264
 }
 
-func (g Generator) previewVideoChunk(lockCtx *fsutil.LockContext, fn string, options previewChunkOptions, fallback bool, useVsync2 bool) error {
+// isNVENC reports whether codec is one of the NVENC encoders.
+func isNVENC(codec ffmpeg.VideoCodec) bool {
+	return codec == ffmpeg.VideoCodecN264 || codec == ffmpeg.VideoCodecN264H
+}
+
+// previewFullHW reports whether preview video should first be attempted with a
+// full GPU pipeline, where decoding, scaling and encoding all happen on the GPU.
+// Only NVENC is supported; other hardware encoders keep the CPU-decode path.
+func (g Generator) previewFullHW() bool {
+	return isNVENC(g.getPreviewVideoCodec())
+}
+
+// fullHWScaleFilter scales on the GPU. Converting to 8-bit 4:2:0 lets NVENC take
+// sources NVDEC decodes to other formats, such as 10-bit HEVC.
+func fullHWScaleFilter(width int) ffmpeg.VideoFilter {
+	return ffmpeg.VideoFilter(fmt.Sprintf("scale_cuda=w=%d:h=-2:format=yuv420p", width))
+}
+
+// previewVideoChunkHW generates a preview chunk, trying the full GPU pipeline first
+// while *fullHW is set. If the GPU cannot handle the source - NVDEC does not decode
+// 10-bit or 4:2:2 h264, for example - ffmpeg exits with an error, the chunk is
+// retried with CPU decoding, and *fullHW is cleared so the rest of this video skips
+// the GPU attempt.
+func (g Generator) previewVideoChunkHW(lockCtx *fsutil.LockContext, fn string, options previewChunkOptions, fallback bool, useVsync2 bool, fullHW *bool) error {
+	if *fullHW {
+		err := g.previewVideoChunk(lockCtx, fn, options, fallback, useVsync2, true)
+		if err == nil || lockCtx.Err() != nil {
+			return err
+		}
+		logger.Warnf("[generator] full GPU preview failed for %s, falling back to CPU decoding: %v", fn, err)
+		*fullHW = false
+	}
+	return g.previewVideoChunk(lockCtx, fn, options, fallback, useVsync2, false)
+}
+
+func (g Generator) previewVideoChunk(lockCtx *fsutil.LockContext, fn string, options previewChunkOptions, fallback bool, useVsync2 bool, fullHW bool) error {
 	codec := g.getPreviewVideoCodec()
 	useHardware := codec != ffmpeg.VideoCodecLibX264
+	fullHW = fullHW && isNVENC(codec)
 
 	var videoFilter ffmpeg.VideoFilter
 	videoFilter = videoFilter.ScaleWidth(scenePreviewWidth)
 
 	var videoArgs ffmpeg.Args
 
-	if useHardware {
-		// Hardware encoding: scale on CPU first, then upload to GPU
-		// Filter order: scale -> format -> hwupload_cuda
-		hwFilter := g.Encoder.HWFilterInit(codec, false)
-		if hwFilter != "" {
-			// Append hwFilter AFTER scale (scale on CPU, then upload to GPU)
-			videoFilter = ffmpeg.VideoFilter(string(videoFilter) + "," + string(hwFilter))
-		}
-		videoArgs = videoArgs.VideoFilter(videoFilter)
-		// Add NVENC-specific encoding args (without codec, transcoder adds it)
+	switch {
+	case fullHW:
+		// Full GPU: frames are decoded, scaled and encoded without leaving the GPU
+		videoArgs = videoArgs.VideoFilter(fullHWScaleFilter(scenePreviewWidth))
 		videoArgs = append(videoArgs,
 			"-rc", "vbr",
 			"-cq", "21",
 		)
-	} else {
-		// Software encoding: use original settings
+	case useHardware:
+		// Hardware encoding only: decode and scale on CPU, then upload to the GPU
+		if hwFilter := g.Encoder.HWFilterInit(codec, false); hwFilter != "" {
+			videoFilter = ffmpeg.VideoFilter(string(videoFilter) + "," + string(hwFilter))
+		}
+		videoArgs = videoArgs.VideoFilter(videoFilter)
+		videoArgs = append(videoArgs,
+			"-rc", "vbr",
+			"-cq", "21",
+		)
+	default:
 		videoArgs = videoArgs.VideoFilter(videoFilter)
 		videoArgs = append(videoArgs,
 			"-pix_fmt", "yuv420p",
@@ -226,12 +268,11 @@ func (g Generator) previewVideoChunk(lockCtx *fsutil.LockContext, fn string, opt
 		videoArgs = append(videoArgs, "-vsync", "2")
 	}
 
-	// Build extra input args with hardware device initialization if needed
+	// Hardware device initialisation goes before the user's input args
 	extraInputArgs := g.FFMpegConfig.GetTranscodeInputArgs()
 	if useHardware {
 		var hwArgs ffmpeg.Args
-		hwArgs = g.Encoder.HWDeviceInit(hwArgs, codec, false)
-		// Prepend hardware args to user-provided input args
+		hwArgs = g.Encoder.HWDeviceInit(hwArgs, codec, fullHW)
 		extraInputArgs = append(hwArgs, extraInputArgs...)
 	}
 
@@ -274,7 +315,7 @@ func (g Generator) generateConcatFile(chunkFiles []string) (fn string, err error
 	for _, f := range chunkFiles {
 		// files in concat file should be relative to concat
 		relFile := filepath.Base(f)
-		if _, err := w.WriteString(fmt.Sprintf("file '%s'\n", relFile)); err != nil {
+		if _, err := fmt.Fprintf(w, "file '%s'\n", relFile); err != nil {
 			return concatFile.Name(), fmt.Errorf("writing concat file: %w", err)
 		}
 	}
