@@ -114,9 +114,26 @@ If the GPU cannot decode a source (NVDEC does not support 10-bit or 4:2:2 h264, 
 
 ### Why single-frame tasks stay on the CPU
 
-Every ffmpeg process that uses CUDA pays roughly 250 ms to set up a GPU context. Sprites, phash and screenshots start one ffmpeg process per frame (81 for a sprite, 25 for a phash), and one frame is cheaper to decode on the CPU than that set-up cost. Measured on an RTX A2000 with 4K h264 and four workers running at once: about 100 ms per frame on the CPU versus about 210 ms with `-hwaccel cuda`. Keeping the GPU context alive between processes did not change this, and neither did long keyframe intervals: on a source with a keyframe every 10 seconds, a grab took about 1.15 s on the CPU versus about 3.0 s with `-hwaccel cuda`, because every frame decoded while seeking is copied back to system memory. CPU and CUDA decoding also produce byte-identical frames, so phash values are the same either way.
+Sprites, phash and screenshots start one ffmpeg process per frame (81 for a sprite, 25 for a phash), and every process that uses CUDA pays to set up a GPU context before decoding anything. Measured on an RTX A2000 with 4K h264:
 
-Video work is the opposite: a 0.75 s preview segment took about 390 ms with the full GPU pipeline versus about 550 ms when the CPU decoded the 4K source, and used about 70% less CPU time.
+| Single-frame grab | CPU | GPU, persistence mode off | GPU, persistence mode on |
+|---|---|---|---|
+| Keyframe every 0.5 s | ~150 ms | ~2,200 ms | ~450 ms |
+| Keyframe every 10 s | ~1,180 ms | ~3,000 ms | ~960 ms |
+
+For typical sources the CPU wins even with a warm GPU. Only sources with long keyframe intervals come out ahead on the GPU, and then only by about 20% and only with persistence mode on, so these tasks use stock Stash. CPU and CUDA decoding produce byte-identical frames, so phash values are the same either way.
+
+Video work is the opposite: with the GPU warm, a 0.75 s preview segment took about 470 ms with the full GPU pipeline versus about 700 ms when the CPU decoded the 4K source, and used about 70% less CPU time.
+
+### Enable persistence mode (strongly recommended)
+
+Without persistence mode, the NVIDIA driver shuts the GPU down whenever no process is using it, and the next process has to reload the GPU firmware. On the RTX A2000 that added about 1.7-2 s to every ffmpeg run: a preview segment took about 2.5 s instead of about 0.47 s. Stash starts a separate ffmpeg process per preview segment, so this dominates preview generation time. On the host, as root:
+
+```bash
+nvidia-smi -pm 1
+```
+
+This resets on reboot. To make it permanent, enable the `nvidia-persistenced` service; if your driver was installed with NVIDIA's `.run` installer and has no unit file, run the installer in `/usr/share/doc/NVIDIA_GLX-1.0/samples/nvidia-persistenced-init.tar.bz2`. Check with `nvidia-smi --query-gpu=persistence_mode --format=csv`.
 
 ## Building From Source
 
