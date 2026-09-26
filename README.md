@@ -107,7 +107,8 @@ watch -n 1 nvidia-smi
 |------|--------|-------|--------|
 | Preview videos | NVDEC | `scale_cuda` | NVENC (h264_nvenc) |
 | Marker videos | NVDEC | `scale_cuda` | NVENC (h264_nvenc) |
-| Sprites, phash, cover and marker screenshots | CPU | CPU | CPU (stock Stash) |
+| Sprites | CPU, keyframes only | CPU | CPU |
+| Phash, cover and marker screenshots | CPU | CPU | CPU (stock Stash) |
 | WebP previews | CPU | CPU | CPU (libwebp) |
 
 If the GPU cannot decode a source (NVDEC does not support 10-bit or 4:2:2 h264, for example), that video's previews automatically fall back to CPU decoding with NVENC encoding. 10-bit HEVC stays fully on the GPU.
@@ -120,6 +121,8 @@ Sprites, phash and screenshots start one ffmpeg process per frame (81 for a spri
 |---|---|---|---|
 | Keyframe every 0.5 s | ~150 ms | ~2,200 ms | ~450 ms |
 | Keyframe every 10 s | ~1,180 ms | ~3,000 ms | ~960 ms |
+
+Sprites additionally grab the nearest keyframe instead of the exact timestamp (`-skip_frame nokey -noaccurate_seek`), so ffmpeg decodes one frame instead of everything between the previous keyframe and the target. Each thumbnail can be up to one keyframe interval (typically 2-4 s) early, which does not matter for a scrub bar. With four workers this made a sprite grab 3-9x faster on 4K sources (for example 531 ms to 61 ms with 4 s keyframe intervals). Phash keeps exact timestamps so its values do not change.
 
 For typical sources the CPU wins even with a warm GPU. Only sources with long keyframe intervals come out ahead on the GPU, and then only by about 20% and only with persistence mode on, so these tasks use stock Stash. CPU and CUDA decoding produce byte-identical frames, so phash values are the same either way.
 
@@ -209,6 +212,8 @@ nvidia-smi dmon -s u -d 1
 - `pkg/scene/generate/generator.go` - Added GetTranscodeHardwareAcceleration()
 - `pkg/scene/generate/preview.go` - Full GPU previews with CPU-decode fallback
 - `pkg/scene/generate/marker_preview.go` - Full GPU marker videos with CPU-decode fallback
+- `pkg/scene/generate/sprite.go` - Keyframe-only sprite thumbnails
+- `pkg/ffmpeg/hw_keepwarm*.go` - Keep the CUDA context open while generating (new files)
 
 ## Limitations
 

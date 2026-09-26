@@ -17,12 +17,14 @@ RUN cp /patches/codec_hardware.go pkg/ffmpeg/ && \
 # ============================================
 # Apply patches to pkg/scene/generate
 # ============================================
-# Sprites, phash and cover/marker screenshots are deliberately NOT patched: a
-# single-frame grab is ~2x faster on the CPU than paying CUDA start-up per ffmpeg
-# process, so those use stock Stash. See CLAUDE.md.
+# Single-frame tasks (sprites, phash, cover/marker screenshots) stay on the CPU:
+# a CPU grab is faster than paying CUDA start-up per ffmpeg process. sprite.go is
+# patched only to grab keyframes; phash stays stock so hashes are unchanged.
+# See CLAUDE.md.
 RUN cp /patches/generator.go pkg/scene/generate/ && \
     cp /patches/preview.go pkg/scene/generate/ && \
-    cp /patches/marker_preview.go pkg/scene/generate/
+    cp /patches/marker_preview.go pkg/scene/generate/ && \
+    cp /patches/sprite.go pkg/scene/generate/
 # ============================================
 # DEBUG: Verify patches were applied
 # ============================================
@@ -32,6 +34,7 @@ RUN echo "=== Verifying patches ===" && \
     grep -q "GetTranscodeHardwareAcceleration" pkg/scene/generate/generator.go && echo "✓ generator.go" && \
     grep -q "previewVideoChunkHW" pkg/scene/generate/preview.go && echo "✓ preview.go" && \
     grep -q "markerPreviewVideoArgs" pkg/scene/generate/marker_preview.go && echo "✓ marker_preview.go" && \
+    grep -q "keyframeSeekArgs" pkg/scene/generate/sprite.go && echo "✓ sprite.go" && \
     echo "=== All patches verified ==="
 # Build UI
 WORKDIR /build/ui/v2.5

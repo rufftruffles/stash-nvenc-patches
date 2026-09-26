@@ -50,6 +50,7 @@ The Dockerfile clones Stash `develop` branch, then **replaces** files at these p
 | `generator.go` | `pkg/scene/generate/generator.go` |
 | `preview.go` | `pkg/scene/generate/preview.go` |
 | `marker_preview.go` | `pkg/scene/generate/marker_preview.go` |
+| `sprite.go` | `pkg/scene/generate/sprite.go` |
 
 The Dockerfile verifies patches with `grep -q` checks for key symbols after copying.
 
@@ -59,7 +60,9 @@ The Dockerfile verifies patches with `grep -q` checks for key symbols after copy
 
 **CUDA keep-warm:** without GPU persistence mode on the host, the NVIDIA driver reloads GPU firmware whenever no process holds a context, adding ~1.7-2 s to every ffmpeg run (a preview segment goes from ~0.47 s to ~2.5 s). `FFMpeg.HoldHWDevice` (`hw_keepwarm.go`) starts one idle `ffmpeg -init_hw_device cuda -re -f lavfi -i nullsrc=s=16x16:r=1 -f null -` while preview or marker videos are generating, and kills it 60 s after the last job. It is NVENC-only, disables itself if the holder exits within 2 s (no usable CUDA), and uses `Pdeathsig` on Linux so it dies with Stash. Keep the three `hw_keepwarm*.go` files together: the `_linux`/`_other` pair provides `setParentDeathSignal` per platform.
 
-**Single-frame tasks deliberately stay on the CPU:** sprites, phash, cover and marker screenshots, and marker WebP previews are *not* patched. Each ffmpeg process that uses CUDA pays ~250 ms of context set-up, which is more than decoding one frame on the CPU. Measured on the RTX A2000 with 4 workers at once: ~100 ms per frame on the CPU vs ~210 ms with `-hwaccel cuda`. CPU and CUDA decoding give byte-identical frames, so phash values are unaffected. Do not re-add `-hwaccel cuda` to these paths without re-benchmarking.
+**Keyframe-only sprite grabs:** `sprite.go` adds `-skip_frame nokey -noaccurate_seek` before `-ss` (`keyframeSeekArgs`), so each sprite thumbnail is the nearest keyframe at or before its timestamp and only that frame is decoded. Stock ffmpeg decodes forward to the exact timestamp, which on 4K sources with 2-4 s keyframe intervals costs 2.5-4 CPU-seconds per frame. Measured with 4 workers: 4K 4 s GOP 531 → 61 ms per grab, 4K 2 s 193 → 57 ms, 1080p 3.6 s 111 → 31 ms. `-noaccurate_seek` alone does NOT help (ffmpeg still decodes every frame); both flags are needed. If the keyframe grab fails it retries the stock exact grab, then upstream's slow-seek grab. Never apply this to phash: it would change the hash.
+
+**Single-frame tasks otherwise stay on the CPU:** phash, cover and marker screenshots, and marker WebP previews are *not* patched, and sprites do not use CUDA. Each ffmpeg process that uses CUDA pays ~250 ms of context set-up, which is more than decoding one frame on the CPU. Measured on the RTX A2000 with 4 workers at once: ~100 ms per frame on the CPU vs ~210 ms with `-hwaccel cuda`. CPU and CUDA decoding give byte-identical frames, so phash values are unaffected. Do not re-add `-hwaccel cuda` to these paths without re-benchmarking.
 
 **Config interface:** `FFMpegConfig` (in `generator.go`) is the central interface patches use to check hardware acceleration state. It provides `GetTranscodeHardwareAcceleration() bool`.
 
