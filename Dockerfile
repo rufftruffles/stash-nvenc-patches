@@ -12,7 +12,8 @@ COPY patches/ /patches/
 # ============================================
 RUN cp /patches/codec_hardware.go pkg/ffmpeg/ && \
     cp /patches/stream_transcode.go pkg/ffmpeg/ && \
-    cp /patches/stream_segmented.go pkg/ffmpeg/
+    cp /patches/stream_segmented.go pkg/ffmpeg/ && \
+    cp /patches/hw_keepwarm.go /patches/hw_keepwarm_linux.go /patches/hw_keepwarm_other.go pkg/ffmpeg/
 # ============================================
 # Apply patches to pkg/scene/generate
 # ============================================
@@ -27,6 +28,7 @@ RUN cp /patches/generator.go pkg/scene/generate/ && \
 # ============================================
 RUN echo "=== Verifying patches ===" && \
     grep -q "HWCodecMP4Compatible" pkg/ffmpeg/codec_hardware.go && echo "✓ codec_hardware.go" && \
+    grep -q "HoldHWDevice" pkg/ffmpeg/hw_keepwarm.go && echo "✓ hw_keepwarm.go" && \
     grep -q "GetTranscodeHardwareAcceleration" pkg/scene/generate/generator.go && echo "✓ generator.go" && \
     grep -q "previewVideoChunkHW" pkg/scene/generate/preview.go && echo "✓ preview.go" && \
     grep -q "markerPreviewVideoArgs" pkg/scene/generate/marker_preview.go && echo "✓ marker_preview.go" && \

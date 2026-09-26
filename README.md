@@ -125,9 +125,13 @@ For typical sources the CPU wins even with a warm GPU. Only sources with long ke
 
 Video work is the opposite: with the GPU warm, a 0.75 s preview segment took about 470 ms with the full GPU pipeline versus about 700 ms when the CPU decoded the 4K source, and used about 70% less CPU time.
 
-### Enable persistence mode (strongly recommended)
+### GPU keep-warm and persistence mode
 
-Without persistence mode, the NVIDIA driver shuts the GPU down whenever no process is using it, and the next process has to reload the GPU firmware. On the RTX A2000 that added about 1.7-2 s to every ffmpeg run: a preview segment took about 2.5 s instead of about 0.47 s. Stash starts a separate ffmpeg process per preview segment, so this dominates preview generation time. On the host, as root:
+Without persistence mode, the NVIDIA driver shuts the GPU down whenever no process is using it, and the next process has to reload the GPU firmware. On the RTX A2000 that added about 1.7-2 s to every ffmpeg run: a preview segment took about 2.5 s instead of about 0.47 s. Stash starts a separate ffmpeg process per preview segment, so this would dominate preview generation.
+
+The image handles this itself: while preview or marker videos are generating, Stash keeps one idle ffmpeg process holding the GPU open (visible as `ffmpeg ... -init_hw_device cuda ... nullsrc`), and stops it 60 seconds after the last job. It uses effectively no CPU or GPU, and it is killed automatically if Stash exits.
+
+Persistence mode on the host is still worthwhile, because it also removes the start-up delay for live transcoding when you press play. As root:
 
 ```bash
 nvidia-smi -pm 1

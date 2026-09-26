@@ -86,6 +86,10 @@ func (g Generator) markerPreviewVideo(input string, options sceneMarkerOptions) 
 	return func(lockCtx *fsutil.LockContext, tmpFn string) error {
 		codec := g.getPreviewVideoCodec()
 
+		// keep the GPU initialised between marker jobs
+		release := g.Encoder.HoldHWDevice(codec)
+		defer release()
+
 		// Try the full GPU pipeline first, falling back to CPU decoding if the GPU
 		// cannot handle the source. See previewVideoChunkHW.
 		if isNVENC(codec) {

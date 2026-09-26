@@ -97,6 +97,10 @@ func (g *Generator) previewVideo(input string, videoDuration float64, options Pr
 	}
 
 	return func(lockCtx *fsutil.LockContext, tmpFn string) error {
+		// keep the GPU initialised across this video's segment processes
+		release := g.Encoder.HoldHWDevice(g.getPreviewVideoCodec())
+		defer release()
+
 		// a list of tmp files used during the preview generation
 		var tmpFiles []string
 
@@ -161,6 +165,9 @@ func (g *Generator) previewVideoSingle(input string, videoDuration float64, opti
 			Audio:      options.Audio,
 			Preset:     options.Preset,
 		}
+
+		release := g.Encoder.HoldHWDevice(g.getPreviewVideoCodec())
+		defer release()
 
 		fullHW := g.previewFullHW()
 		return g.previewVideoChunkHW(lockCtx, input, chunkOptions, fallback, useVsync2, &fullHW)
