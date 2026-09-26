@@ -44,26 +44,19 @@ The Dockerfile clones Stash `develop` branch, then **replaces** files at these p
 | `codec_hardware.go` | `pkg/ffmpeg/codec_hardware.go` |
 | `stream_transcode.go` | `pkg/ffmpeg/stream_transcode.go` |
 | `stream_segmented.go` | `pkg/ffmpeg/stream_segmented.go` |
-| `screenshot.go` | `pkg/ffmpeg/transcoder/screenshot.go` |
 | `generator.go` | `pkg/scene/generate/generator.go` |
 | `preview.go` | `pkg/scene/generate/preview.go` |
-| `sprite.go` | `pkg/scene/generate/sprite.go` |
-| `screenshot_generate.go` | `pkg/scene/generate/screenshot.go` |
 | `marker_preview.go` | `pkg/scene/generate/marker_preview.go` |
-| `phash.go` | `pkg/hash/videophash/phash.go` |
-| `task_generate_phash.go` | `internal/manager/task_generate_phash.go` |
 
 The Dockerfile verifies patches with `grep -q` checks for key symbols after copying.
 
 ## Key Architecture Concepts
 
-**GPU Encoding (preview/marker videos):** `codec_hardware.go` exports `HWCodecMP4Compatible()` which returns the best available hardware codec. `preview.go` and `marker_preview.go` use it to build ffmpeg args with `-hwaccel cuda`, CUDA filter chains (`scale_cuda`, `hwupload_cuda`), and NVENC output (`h264_nvenc`).
+**Full GPU preview/marker videos:** `codec_hardware.go` exports `HWCodecMP4Compatible()`, which returns the best available hardware codec. With NVENC, `preview.go` and `marker_preview.go` first try a full GPU pipeline (`-hwaccel cuda -hwaccel_output_format cuda`, `scale_cuda=...:format=yuv420p`, `h264_nvenc`). If ffmpeg exits with an error, they retry with CPU decoding plus `hwupload_cuda` and NVENC, and skip the GPU attempt for the rest of that video (`previewVideoChunkHW`). NVDEC rejects 10-bit and 4:2:2 h264, which is what the fallback is for; do not remove it, because the image is public.
 
-**GPU Decoding (sprites/screenshots/phash):** For image-output tasks, patches add `-hwaccel cuda` to ffmpeg input args when `GetTranscodeHardwareAcceleration()` returns true. This is injected via the `FFMpegConfig` interface defined in `generator.go`.
+**Single-frame tasks deliberately stay on the CPU:** sprites, phash, cover and marker screenshots, and marker WebP previews are *not* patched. Each ffmpeg process that uses CUDA pays ~250 ms of context set-up, which is more than decoding one frame on the CPU. Measured on the RTX A2000 with 4 workers at once: ~100 ms per frame on the CPU vs ~210 ms with `-hwaccel cuda`. CPU and CUDA decoding give byte-identical frames, so phash values are unaffected. Do not re-add `-hwaccel cuda` to these paths without re-benchmarking.
 
 **Config interface:** `FFMpegConfig` (in `generator.go`) is the central interface patches use to check hardware acceleration state. It provides `GetTranscodeHardwareAcceleration() bool`.
-
-**`ExtraInputArgs`:** Added to `screenshot.go` (transcoder) and used by sprite/screenshot generators to pass `-hwaccel cuda` as extra input arguments.
 
 ## When Updating Patches
 

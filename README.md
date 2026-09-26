@@ -1,6 +1,6 @@
 # Stash NVIDIA GPU Generation Patches
 
-Patches for [Stash](https://github.com/stashapp/stash) that enable NVIDIA GPU hardware acceleration for all generation tasks including previews, sprites, screenshots, phash, and markers. Reduces generation time by 3-5x on 4K content.
+Patches for [Stash](https://github.com/stashapp/stash) that run preview and marker video generation fully on an NVIDIA GPU (decode, scale and encode), while leaving single-frame tasks such as sprites, phash and screenshots on the CPU, where they are faster.
 
 ## Prerequisites
 
@@ -88,9 +88,12 @@ Monitor ffmpeg commands during generation:
 while true; do docker exec stash ps aux 2>/dev/null | grep ffmpeg | grep -v grep | head -5; sleep 1; done
 ```
 
-Look for:
-- `-hwaccel cuda` - GPU decoding enabled
-- `-c:v h264_nvenc` - GPU encoding enabled
+Look for, on preview and marker video jobs:
+- `-hwaccel cuda -hwaccel_output_format cuda` - GPU decoding, frames stay on the GPU
+- `scale_cuda` - GPU scaling
+- `-c:v h264_nvenc` - GPU encoding
+
+Sprite, phash and screenshot jobs do not use these flags; that is intentional (see below).
 
 Monitor GPU usage:
 
@@ -100,15 +103,20 @@ watch -n 1 nvidia-smi
 
 ## Hardware Acceleration Coverage
 
-| Task | Decode | Encode | Notes |
-|------|--------|--------|-------|
-| Preview videos | CUDA | NVENC (h264_nvenc) | Full GPU acceleration |
-| Marker videos | CUDA | NVENC (h264_nvenc) | Full GPU acceleration |
-| Sprites (81 thumbnails) | CUDA | N/A (BMP output) | GPU decode only |
-| Cover screenshots | CUDA | N/A (JPEG output) | GPU decode only |
-| Phash generation | CUDA | N/A (BMP output) | GPU decode only |
-| Marker screenshots | CUDA | N/A (JPEG output) | GPU decode only |
-| WebP previews | CUDA | CPU (libwebp) | No hardware WebP encoder exists |
+| Task | Decode | Scale | Encode |
+|------|--------|-------|--------|
+| Preview videos | NVDEC | `scale_cuda` | NVENC (h264_nvenc) |
+| Marker videos | NVDEC | `scale_cuda` | NVENC (h264_nvenc) |
+| Sprites, phash, cover and marker screenshots | CPU | CPU | CPU (stock Stash) |
+| WebP previews | CPU | CPU | CPU (libwebp) |
+
+If the GPU cannot decode a source (NVDEC does not support 10-bit or 4:2:2 h264, for example), that video's previews automatically fall back to CPU decoding with NVENC encoding. 10-bit HEVC stays fully on the GPU.
+
+### Why single-frame tasks stay on the CPU
+
+Every ffmpeg process that uses CUDA pays roughly 250 ms to set up a GPU context. Sprites, phash and screenshots start one ffmpeg process per frame (81 for a sprite, 25 for a phash), and one frame is cheaper to decode on the CPU than that set-up cost. Measured on an RTX A2000 with 4K h264 and four workers running at once: about 100 ms per frame on the CPU versus about 210 ms with `-hwaccel cuda`. Keeping the GPU context alive between processes did not change this. CPU and CUDA decoding also produce byte-identical frames, so phash values are the same either way.
+
+Video work is the opposite: a 0.75 s preview segment took about 390 ms with the full GPU pipeline versus about 550 ms when the CPU decoded the 4K source, and used about 70% less CPU time.
 
 ## Building From Source
 
@@ -163,39 +171,29 @@ nvidia-smi dmon -s u -d 1
 
 ## Technical Details
 
-### Hardware Encoding (NVENC)
+### Preview and marker videos
 
-For preview and marker videos:
-1. Detect available hardware codec via HWCodecMP4Compatible()
-2. Initialize CUDA device: `-hwaccel_device 0`
-3. Build filter chain: `scale=WIDTH:-2,format=nv12,hwupload_cuda`
-4. Encode with NVENC: `-c:v h264_nvenc -rc vbr -cq 21`
-
-### Hardware Decoding (CUDA)
-
-For sprites, screenshots, and phash:
-1. Check if Hardware Acceleration is enabled in settings
-2. Prepend `-hwaccel cuda` to ffmpeg input arguments
-3. Decode frames on GPU before CPU processing
+1. Detect the hardware codec via `HWCodecMP4Compatible()`
+2. With NVENC, try the full GPU pipeline first:
+   `-hwaccel_device 0 -hwaccel cuda -hwaccel_output_format cuda`, filter
+   `scale_cuda=w=WIDTH:h=-2:format=yuv420p`, encode `-c:v h264_nvenc -rc vbr -cq 21`
+3. If ffmpeg fails, retry with CPU decoding and GPU encoding
+   (`scale=WIDTH:-2,format=nv12,hwupload_cuda`) for the rest of that video
 
 ### Patched Files
 
 - `pkg/ffmpeg/codec_hardware.go` - Exported HWDeviceInit, HWFilterInit methods
 - `pkg/ffmpeg/stream_transcode.go` - Updated method calls
 - `pkg/ffmpeg/stream_segmented.go` - Updated method calls
-- `pkg/ffmpeg/transcoder/screenshot.go` - Added ExtraInputArgs field
 - `pkg/scene/generate/generator.go` - Added GetTranscodeHardwareAcceleration()
-- `pkg/scene/generate/preview.go` - GPU encoding for previews
-- `pkg/scene/generate/sprite.go` - GPU decoding for sprites
-- `pkg/scene/generate/screenshot.go` - GPU decoding for screenshots
-- `pkg/scene/generate/marker_preview.go` - GPU encoding/decoding for markers
-- `pkg/hash/videophash/phash.go` - GPU decoding for phash
-- `internal/manager/task_generate_phash.go` - Pass config for hardware acceleration
+- `pkg/scene/generate/preview.go` - Full GPU previews with CPU-decode fallback
+- `pkg/scene/generate/marker_preview.go` - Full GPU marker videos with CPU-decode fallback
 
 ## Limitations
 
 - NVIDIA GPUs only (no Intel QSV or AMD AMF support)
-- WebP preview encoding remains CPU-bound (no hardware encoder exists)
+- The full GPU preview pipeline is NVENC-only; other hardware encoders keep CPU decoding
+- WebP previews, sprites, phash and screenshots run on the CPU by design (see above)
 
 ## Credits
 
