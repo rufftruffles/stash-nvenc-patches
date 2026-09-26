@@ -114,7 +114,7 @@ If the GPU cannot decode a source (NVDEC does not support 10-bit or 4:2:2 h264, 
 
 ### Why single-frame tasks stay on the CPU
 
-Every ffmpeg process that uses CUDA pays roughly 250 ms to set up a GPU context. Sprites, phash and screenshots start one ffmpeg process per frame (81 for a sprite, 25 for a phash), and one frame is cheaper to decode on the CPU than that set-up cost. Measured on an RTX A2000 with 4K h264 and four workers running at once: about 100 ms per frame on the CPU versus about 210 ms with `-hwaccel cuda`. Keeping the GPU context alive between processes did not change this. CPU and CUDA decoding also produce byte-identical frames, so phash values are the same either way.
+Every ffmpeg process that uses CUDA pays roughly 250 ms to set up a GPU context. Sprites, phash and screenshots start one ffmpeg process per frame (81 for a sprite, 25 for a phash), and one frame is cheaper to decode on the CPU than that set-up cost. Measured on an RTX A2000 with 4K h264 and four workers running at once: about 100 ms per frame on the CPU versus about 210 ms with `-hwaccel cuda`. Keeping the GPU context alive between processes did not change this, and neither did long keyframe intervals: on a source with a keyframe every 10 seconds, a grab took about 1.15 s on the CPU versus about 3.0 s with `-hwaccel cuda`, because every frame decoded while seeking is copied back to system memory. CPU and CUDA decoding also produce byte-identical frames, so phash values are the same either way.
 
 Video work is the opposite: a 0.75 s preview segment took about 390 ms with the full GPU pipeline versus about 550 ms when the CPU decoded the 4K source, and used about 70% less CPU time.
 
